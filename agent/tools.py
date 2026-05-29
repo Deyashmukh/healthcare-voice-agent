@@ -14,6 +14,7 @@ from a rejection round-trip.
 
 from __future__ import annotations
 
+import re
 import time
 
 from pydantic import BaseModel, ValidationError
@@ -135,6 +136,98 @@ _UNIVERSAL_DTMF_KEYS = frozenset("#*")
 _HOLD_BUDGET_S = 15 * 60
 
 
+# --- Menu-option extraction --------------------------------------------------
+# Populates `CallSession.recent_menu_options` so the `send_dtmf` validator has a
+# source independent of the LLM's own digit choice. Deliberately NARROW: this
+# extracts "which keys did this menu offer", payer-agnostic, with zero
+# navigation logic — it is NOT the retired per-payer regex classifier.
+#
+# The safety asymmetry that drives the design: OVER-capturing a key (allowlist
+# too permissive) degrades gracefully to "no protection for that key" — exactly
+# the pre-fix state. UNDER-capturing a real option causes a FALSE REJECT, which
+# stalls the turn and feeds the no-progress watchdog (two in a row ends the
+# call). So we bias hard toward capture: if the transcript carries a press/dial
+# cue, every single key in it is an option. A hallucinated key the menu never
+# spoke still isn't in the transcript text, so the validator keeps its teeth.
+#
+# The bias isn't absolute: the count-noun exclusion below, and an STT glitch
+# that fuses a key into a longer token ('2for'), can still drop a real key in
+# rare phrasings. Those are accepted as lower-probability than the member-ID
+# false-reject the count-noun rule prevents, and multi-char presses bypass the
+# allowlist entirely (see `_dispatch_send_dtmf`) so they can't false-reject.
+
+_MENU_CUE_WORDS = frozenset({"press", "dial", "enter", "select", "push", "choose", "punch"})
+"""The transcript's keys are captured only if it contains one of these cues.
+Cue-gating keeps cue-less utterances — member IDs, DOBs, years read aloud
+('born in 1980'), hold announcements — from seeding the allowlist at all."""
+
+_WORD_TO_KEY = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "star": "*",
+    "asterisk": "*",
+    "pound": "#",
+    "hash": "#",
+}
+
+_COUNT_NOUNS = frozenset({"digit", "digits", "number", "numbers"})
+"""A key immediately followed by one of these is usually a length, not an option
+— 'enter your 9 digit member ID' offers no '9' key. Excluding these keeps a DTMF
+identifier entry on an 'enter your ... ' prompt from being false-rejected. The
+trade: it can also drop a genuine option in rare phrasings ('press 2 numbers');
+accepted as lower-probability than the identifier case (see the module comment)."""
+
+
+def _token_to_key(token: str) -> str | None:
+    """Map a single transcript token to a DTMF key, or None if it isn't one."""
+    if token in _WORD_TO_KEY:
+        return _WORD_TO_KEY[token]
+    if len(token) == 1 and (token.isdigit() or token in "*#"):
+        return token
+    return None
+
+
+def parse_menu_options(transcript: str) -> list[str]:
+    """Extract the single DTMF keys an IVR menu offered, in first-seen order.
+
+    If the transcript contains any press/dial-style cue, every single-key token
+    in it is captured (except a key immediately followed by a count noun — see
+    `_COUNT_NOUNS`); otherwise nothing is. The whole-transcript scan is
+    deliberately liberal — it captures real options even when the cue and the
+    option list are phrased apart ('press one of the following. billing, 2.'),
+    at the cost of occasionally capturing a non-option digit that shares the
+    transcript. That over-capture
+    is the safe direction (see the module comment): an over-broad allowlist only
+    loses some validator teeth, while a missed option would false-reject a
+    correct press. Multi-digit options (e.g. 'press 10') are not represented
+    here — `_dispatch_send_dtmf` bypasses the allowlist for multi-char presses
+    rather than validate them character-by-character.
+    """
+    tokens = re.findall(r"[a-z0-9#*]+", transcript.lower())
+    if not any(token in _MENU_CUE_WORDS for token in tokens):
+        return []
+    options: list[str] = []
+    seen: set[str] = set()
+    for j, token in enumerate(tokens):
+        key = _token_to_key(token)
+        if key is None or key in seen:
+            continue
+        following = tokens[j + 1] if j + 1 < len(tokens) else ""
+        if following in _COUNT_NOUNS:
+            continue
+        seen.add(key)
+        options.append(key)
+    return options
+
+
 def _reject(message: str) -> ToolResult:
     """Validation-failure result. The message goes back into history so the
     LLM can self-correct on the next turn."""
@@ -192,16 +285,21 @@ async def dispatch(call: ToolCall, session: CallSession) -> ToolResult:
 
 
 def _dispatch_send_dtmf(args: SendDTMFArgs, session: CallSession) -> ToolResult:
-    if session.recent_menu_options:
-        for digit in args.digits:
-            if digit in _UNIVERSAL_DTMF_KEYS:
-                continue
-            if digit not in session.recent_menu_options:
-                return _reject(
-                    f"digit {digit!r} not offered by the most recent menu "
-                    f"(options: {session.recent_menu_options}); pick again or "
-                    "send only universal keys (#, *)."
-                )
+    # The menu allowlist guards single-key menu navigation — the dominant IVR
+    # case and the one the LLM can plausibly hallucinate. A multi-character
+    # press is an identifier entry (member ID, '123456#') or a multi-digit
+    # option ('press 10'); `parse_menu_options` represents the menu as single
+    # keys, so validating a multi-char press character-by-character against it
+    # would false-reject a legitimate one. Multi-char presses therefore bypass
+    # the allowlist (an empty allowlist already bypasses regardless of length).
+    if session.recent_menu_options and len(args.digits) == 1:
+        digit = args.digits
+        if digit not in _UNIVERSAL_DTMF_KEYS and digit not in session.recent_menu_options:
+            return _reject(
+                f"digit {digit!r} not offered by the most recent menu "
+                f"(options: {session.recent_menu_options}); pick again or "
+                "send only universal keys (#, *)."
+            )
     if args.purpose == "rep":
         session.rep_pending = True
         # Surface the arming as a structured event so post-mortems can

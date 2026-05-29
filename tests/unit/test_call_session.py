@@ -315,6 +315,67 @@ async def test_ivr_turn_records_history(make_session: MakeSession):
         await runner.stop()
 
 
+async def test_ivr_turn_populates_recent_menu_options_from_transcript(
+    make_session: MakeSession,
+):
+    """The turn loop parses the menu transcript into recent_menu_options, giving
+    the send_dtmf validator its (previously dead) digit allowlist."""
+    runner, ivr_llm, _rep = _build_runner(make_session(), actuator=FakeActuator())
+    ivr_llm.responses = [IVRTurnResponse(tool_calls=[ToolCall(name="wait", args={})])]
+    try:
+        await runner.start()
+        runner.submit_transcript("For billing press 2, for claims press 3")
+        await wait_until(lambda: runner.session.turn_count >= 1, description="menu turn")
+        assert runner.session.recent_menu_options == ["2", "3"]
+    finally:
+        await runner.stop()
+
+
+async def test_ivr_turn_clears_recent_menu_options_on_non_menu_transcript(
+    make_session: MakeSession,
+):
+    """A non-menu transcript (hold announcement) clears the allowlist so the
+    validator never checks a press against a stale, no-longer-displayed menu."""
+    runner, ivr_llm, _rep = _build_runner(make_session(), actuator=FakeActuator())
+    ivr_llm.responses = [
+        IVRTurnResponse(tool_calls=[ToolCall(name="wait", args={})]),
+        IVRTurnResponse(tool_calls=[ToolCall(name="wait", args={})]),
+    ]
+    try:
+        await runner.start()
+        runner.submit_transcript("Press 1 for English")
+        await wait_until(lambda: runner.session.turn_count >= 1, description="menu turn")
+        assert runner.session.recent_menu_options == ["1"]
+        runner.submit_transcript("Please continue to hold while we connect you")
+        await wait_until(lambda: runner.session.turn_count >= 2, description="hold turn")
+        assert runner.session.recent_menu_options == []
+    finally:
+        await runner.stop()
+
+
+async def test_far_option_digit_from_or_menu_is_accepted(make_session: MakeSession):
+    """Regression guard for the false-reject bug: in 'press 1 for sales or 2 for
+    billing', the second option (2) sits past the cue and after a purpose
+    clause. Pressing it must be ACCEPTED — an under-capturing parser would
+    reject it, stalling the turn and feeding the no-progress watchdog."""
+    actuator = FakeActuator()
+    runner, ivr_llm, _rep = _build_runner(make_session(), actuator=actuator)
+    ivr_llm.responses = [
+        IVRTurnResponse(tool_calls=[ToolCall(name="send_dtmf", args={"digits": "2"})]),
+    ]
+    try:
+        await runner.start()
+        runner.submit_transcript("Press 1 for sales or 2 for billing")
+        await wait_until(
+            lambda: any(isinstance(i, DTMFIntent) for i in actuator.executed),
+            description="DTMF 2 accepted",
+        )
+        assert any(isinstance(i, DTMFIntent) and i.digits == "2" for i in actuator.executed)
+        assert runner.session.recent_menu_options == ["1", "2"]
+    finally:
+        await runner.stop()
+
+
 async def test_speak_intent_is_pushed_to_out_queue(make_session: MakeSession):
     """The default CallActuator routes SpeakIntent.text into out_queue —
     that's the production wire to the configured TTS service via
@@ -340,17 +401,17 @@ async def test_validator_rejection_does_not_advance_call_state(make_session: Mak
     `advanced_call_state=False`, so the turn doesn't count as progress and
     the watchdog ticks. Two such turns trip the watchdog."""
     actuator = FakeActuator()
-    runner, ivr_llm, _rep = _build_runner(
-        make_session(recent_menu_options=["1", "2", "3"]), actuator=actuator
-    )
+    runner, ivr_llm, _rep = _build_runner(make_session(), actuator=actuator)
     ivr_llm.responses = [
         IVRTurnResponse(tool_calls=[ToolCall(name="send_dtmf", args={"digits": "9"})]),
         IVRTurnResponse(tool_calls=[ToolCall(name="send_dtmf", args={"digits": "9"})]),
     ]
     try:
         await runner.start()
-        runner.submit_transcript("first")
-        runner.submit_transcript("second")
+        # The menu transcript itself populates recent_menu_options=["1","2","3"]
+        # (production wiring), so pressing 9 is an off-menu digit → rejected.
+        runner.submit_transcript("Press 1 for sales, press 2 for billing, press 3 for claims")
+        runner.submit_transcript("Press 1 for sales, press 2 for billing, press 3 for claims")
         await wait_until(lambda: runner.session.done)
         assert runner.session.completion_reason == "ivr_no_progress"
         # No DTMF intents reached the actuator (validator rejected both).

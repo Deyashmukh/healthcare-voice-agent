@@ -91,19 +91,27 @@ async def test_send_dtmf_universal_keys_always_allowed(make_session: MakeSession
     assert result.success
 
 
-async def test_send_dtmf_member_id_with_pound_passes_when_offered(make_session: MakeSession):
-    """Composite digit string: `123456#`. Each char must be offered or universal."""
-    s = make_session(recent_menu_options=["1", "2", "3", "4", "5", "6"])
-    result = await tools.dispatch(ToolCall(name="send_dtmf", args={"digits": "123456#"}), s)
+async def test_send_dtmf_multichar_press_bypasses_allowlist(make_session: MakeSession):
+    """A multi-character press is an identifier entry or a multi-digit option,
+    not single-key menu navigation. The allowlist (single keys) can't validate
+    it character-by-character without false-rejecting, so multi-char presses
+    bypass the check entirely — even one containing an off-menu char."""
+    s = make_session(recent_menu_options=["1", "2", "3"])
+    # '9' is not offered, but '129' is a multi-char press → bypasses validation.
+    result = await tools.dispatch(ToolCall(name="send_dtmf", args={"digits": "129"}), s)
     assert result.success
     assert isinstance(result.side_effect, DTMFIntent)
+    assert result.side_effect.digits == "129"
 
 
-async def test_send_dtmf_composite_with_unoffered_digit_rejected(make_session: MakeSession):
-    s = make_session(recent_menu_options=["1", "2", "3"])
-    result = await tools.dispatch(ToolCall(name="send_dtmf", args={"digits": "129"}), s)
-    assert not result.success
-    assert "9" in result.message
+async def test_send_dtmf_member_id_entry_bypasses_allowlist(make_session: MakeSession):
+    """The common real case: a menu allowlist is set, then the IVR asks for a
+    member ID. The multi-digit DTMF entry must go through regardless of which
+    single keys the prior menu offered."""
+    s = make_session(recent_menu_options=["1", "2"])
+    result = await tools.dispatch(ToolCall(name="send_dtmf", args={"digits": "987654#"}), s)
+    assert result.success
+    assert isinstance(result.side_effect, DTMFIntent)
 
 
 # --- speak ------------------------------------------------------------------
