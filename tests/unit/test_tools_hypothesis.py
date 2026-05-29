@@ -87,23 +87,23 @@ def test_send_dtmf_allowlist_property(
     digits: str,
     menu_options: list[str],
 ) -> None:
-    """`send_dtmf` accepts iff every digit is universal (#, *) or appears in
-    `recent_menu_options` — or `recent_menu_options` is empty (no menu seen).
-
-    The dispatcher iterates digit-by-digit and rejects on the first mismatch;
-    this property locks in that behavior across the full digit/menu matrix.
+    """`send_dtmf` validates only SINGLE-key presses against the allowlist: a
+    one-char press is accepted iff it is universal (#, *) or in
+    `recent_menu_options`. An empty allowlist (no menu seen) accepts anything,
+    and a multi-character press (identifier / multi-digit option) bypasses the
+    allowlist entirely — validating it char-by-char would false-reject
+    legitimate entries. This property locks that contract across the matrix.
     """
     session = make_session(recent_menu_options=list(menu_options))
     result = asyncio.run(
         tools.dispatch(ToolCall(name="send_dtmf", args={"digits": digits}), session)
     )
 
-    if not menu_options:
-        # No menu seen yet → any digits go through.
+    if not menu_options or len(digits) > 1:
+        # No menu seen, or a multi-char press → bypasses the allowlist.
         expected_accept = True
     else:
-        allowed = _UNIVERSAL_DTMF_KEYS | set(menu_options)
-        expected_accept = all(d in allowed for d in digits)
+        expected_accept = digits in (_UNIVERSAL_DTMF_KEYS | set(menu_options))
 
     assert result.success is expected_accept
     assert result.advanced_call_state is expected_accept

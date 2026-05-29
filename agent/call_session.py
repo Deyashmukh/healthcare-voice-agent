@@ -39,6 +39,7 @@ from agent.schemas import (
     ToolResult,
     Turn,
 )
+from agent.tools import parse_menu_options
 
 QUEUE_MAX = 8
 
@@ -307,11 +308,17 @@ class CallSessionRunner:
             if self.session.mode == "rep":
                 await self._rep_turn()
             else:
-                await self._ivr_turn()
+                await self._ivr_turn(transcript)
             self.session.turn_count += 1
 
     @observe(name="ivr_turn")
-    async def _ivr_turn(self) -> None:
+    async def _ivr_turn(self, transcript: str) -> None:
+        # Refresh the digit allowlist from THIS turn's transcript before the
+        # LLM picks a tool. A menu transcript populates it (so `send_dtmf`
+        # validation has teeth); a non-menu transcript (hold music, greeting)
+        # clears it, leaving the validator permissive. Always-fresh — never
+        # validates a press against a stale menu's options.
+        self.session.recent_menu_options = parse_menu_options(transcript)
         response = await self.ivr_llm.complete_with_tools(
             system=self.ivr_system_prompt,
             history=self.session.history,
