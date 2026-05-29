@@ -1,4 +1,4 @@
-.PHONY: agent test lint format typecheck install
+.PHONY: agent test lint format typecheck install eval-spike
 
 install:
 	uv sync
@@ -20,3 +20,8 @@ format:
 
 typecheck:
 	uv run pyright
+
+# M-eval/0 measurement spike — LIVE LLMs (~200 calls). Needs GROQ_API_KEY +
+# ANTHROPIC_API_KEY. Prints run-to-run agreement to set Plan 2 thresholds.
+eval-spike:
+	uv run python -m agent.eval._spike
