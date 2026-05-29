@@ -36,9 +36,17 @@ def write_report(
     timestamp: str,
 ) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
-    safe_ts = timestamp.replace(":", "").replace("-", "")
+    # Strip only ':' (illegal in filenames on some platforms); keep '-' since it
+    # is filename-safe and stripping it would collapse distinct timestamps onto
+    # the same name. Open exclusive ('x') so a same-name collision (e.g. two
+    # runs of one layer within the same second) FAILS LOUDLY instead of silently
+    # clobbering the earlier run's result — eval_results/ is gitignored scratch,
+    # so a loud failure is cheap to recover from. The committed trend
+    # (eval_history.jsonl) is append-only and unaffected.
+    safe_ts = timestamp.replace(":", "")
     out_path = results_dir / f"{report.layer}-{safe_ts}.json"
-    out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    with out_path.open("x", encoding="utf-8") as f:
+        f.write(report.model_dump_json(indent=2))
 
     summary = {
         "timestamp": timestamp,

@@ -34,11 +34,19 @@ class FailureMode(StrEnum):
     WRONG_COMPLETION_REASON = "wrong_completion_reason"
 
 
-class IVREvalCase(BaseModel):
+class EvalCase(BaseModel):
+    """Shared base for every eval case: a stable `id` used in results and logs.
+    Bounding the loader/runner typevars to this (not bare `BaseModel`) makes
+    `case.id` a typed attribute, so a future case model that forgets `id` is a
+    type error rather than a silent `"<unknown>"` at runtime."""
+
+    id: str
+
+
+class IVREvalCase(EvalCase):
     """One IVR tool-choice case. `history` MUST carry the menu as transcript
     text — that is the only channel the LLM sees menu options through."""
 
-    id: str
     payer: str
     history: list[Turn]
     expected_tool: ToolName
@@ -46,11 +54,10 @@ class IVREvalCase(BaseModel):
     rationale: str
 
 
-class RepEvalCase(BaseModel):
+class RepEvalCase(EvalCase):
     """One rep-extraction case. `history` is POST-FLIP (rep-phase) turns only,
     matching what `_rep_turn` sends after slicing at `rep_mode_index`."""
 
-    id: str
     history: list[Turn]
     expected_extracted: Benefits
     expected_phase: Literal["extracting", "complete", "stuck"]

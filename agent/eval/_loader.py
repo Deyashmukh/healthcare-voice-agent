@@ -10,16 +10,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from agent.errors import AgentError
+from agent.eval._types import EvalCase
 
 
 class CorpusError(AgentError):
     """A corpus file could not be read or a line could not be parsed."""
 
 
-def load_cases[CaseT: BaseModel](path: Path, model: type[CaseT]) -> list[CaseT]:
+def load_cases[CaseT: EvalCase](path: Path, model: type[CaseT]) -> list[CaseT]:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:

@@ -14,9 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from pydantic import BaseModel
-
-from agent.eval._types import CaseResult, EvalOutcome, ScoreReport
+from agent.eval._types import CaseResult, EvalCase, EvalOutcome, ScoreReport
 from agent.logging_config import log
 
 _DEFAULT_MAX_CASES = 500
@@ -24,7 +22,7 @@ _DEFAULT_MAX_CASES = 500
 burn the account. Truncation is logged loudly, never silent."""
 
 
-async def run_eval[CaseT: BaseModel](
+async def run_eval[CaseT: EvalCase](
     cases: list[CaseT],
     scorer: Callable[[CaseT], Awaitable[CaseResult]],
     *,
@@ -41,7 +39,7 @@ async def run_eval[CaseT: BaseModel](
     retry_budget = total_retry_budget
     results: list[CaseResult] = []
     for case in selected:
-        case_id = getattr(case, "id", "<unknown>")
+        case_id = case.id
         attempts_left = per_case_retries
         last_error: Exception | None = None
         result: CaseResult | None = None
@@ -59,7 +57,7 @@ async def run_eval[CaseT: BaseModel](
                 break
         if result is None:
             result = CaseResult(
-                case_id=str(case_id),
+                case_id=case_id,
                 outcome=EvalOutcome.ERROR,
                 error=str(last_error),
             )

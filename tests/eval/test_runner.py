@@ -57,7 +57,10 @@ async def test_run_eval_retry_succeeds_on_second_attempt() -> None:
 
 
 async def test_run_eval_aggregate_retry_budget_caps_total_retries() -> None:
+    calls: list[str] = []
+
     async def scorer(case: IVREvalCase) -> CaseResult:
+        calls.append(case.id)
         raise RuntimeError("down")
 
     # 3 cases, each would retry once = 3 retries wanted, but budget is 1.
@@ -69,8 +72,25 @@ async def test_run_eval_aggregate_retry_budget_caps_total_retries() -> None:
         total_retry_budget=1,
     )
     assert report.errored == 3  # all error out
-    # Only 1 retry was spent across the whole run: 3 initial + 1 retry = 4 calls.
-    # (Asserted indirectly via the budget; see implementation.)
+    # Directly pin the cap: 3 initial attempts + exactly 1 budgeted retry = 4
+    # calls. Without the budget the count would be 6 (each case retrying once),
+    # so this assertion is what actually distinguishes a working cap from none.
+    assert len(calls) == 4
+
+
+async def test_run_eval_returned_error_is_not_retried() -> None:
+    """Only RAISES are retried. A scorer that RETURNS an ERROR-outcome
+    CaseResult has made a final scoring decision — the runner records it as-is
+    and calls the scorer exactly once."""
+    calls: list[str] = []
+
+    async def scorer(case: IVREvalCase) -> CaseResult:
+        calls.append(case.id)
+        return CaseResult(case_id=case.id, outcome=EvalOutcome.ERROR, error="unscoreable")
+
+    report = await run_eval([_case("a")], scorer, layer="ivr", per_case_retries=3)
+    assert report.errored == 1
+    assert len(calls) == 1  # not retried despite per_case_retries=3
 
 
 async def test_run_eval_max_cases_truncates_and_logs() -> None:
