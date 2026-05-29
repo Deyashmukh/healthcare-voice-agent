@@ -41,3 +41,6 @@ langfuse-data/
 
 # Per-call benefits log (live-test artifacts; override path with BENEFITS_LOG_PATH)
 benefits.jsonl
+
+# Eval run artifacts (per-run JSON). The committed trend is eval_history.jsonl.
+eval_results/
