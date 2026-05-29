@@ -179,9 +179,11 @@ _WORD_TO_KEY = {
 }
 
 _COUNT_NOUNS = frozenset({"digit", "digits", "number", "numbers"})
-"""A key immediately followed by one of these is a length, not an option —
-'enter your 9 digit member ID' offers no '9' key. Excluding these is what keeps
-a DTMF identifier entry on an 'enter your ... ' prompt from being false-rejected."""
+"""A key immediately followed by one of these is usually a length, not an option
+— 'enter your 9 digit member ID' offers no '9' key. Excluding these keeps a DTMF
+identifier entry on an 'enter your ... ' prompt from being false-rejected. The
+trade: it can also drop a genuine option in rare phrasings ('press 2 numbers');
+accepted as lower-probability than the identifier case (see the module comment)."""
 
 
 def _token_to_key(token: str) -> str | None:
@@ -197,11 +199,12 @@ def parse_menu_options(transcript: str) -> list[str]:
     """Extract the single DTMF keys an IVR menu offered, in first-seen order.
 
     If the transcript contains any press/dial-style cue, every single-key token
-    in it is captured (count-phrase digits like '9 digit' excluded); otherwise
-    nothing is. The whole-transcript scan is deliberately liberal — it captures
-    every real option even when the cue and the option list are phrased apart
-    ('press one of the following. billing, 2.'), at the cost of occasionally
-    capturing a non-option digit that shares the transcript. That over-capture
+    in it is captured (except a key immediately followed by a count noun — see
+    `_COUNT_NOUNS`); otherwise nothing is. The whole-transcript scan is
+    deliberately liberal — it captures real options even when the cue and the
+    option list are phrased apart ('press one of the following. billing, 2.'),
+    at the cost of occasionally capturing a non-option digit that shares the
+    transcript. That over-capture
     is the safe direction (see the module comment): an over-broad allowlist only
     loses some validator teeth, while a missed option would false-reject a
     correct press. Multi-digit options (e.g. 'press 10') are not represented

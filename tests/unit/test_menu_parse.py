@@ -3,10 +3,11 @@
 extractor that populates `CallSession.recent_menu_options` so the `send_dtmf`
 digit-allowlist validator has an independent source to check against.
 
-The extractor is deliberately conservative: it captures a digit ONLY when a
-press/dial/select-style cue precedes it within a short window. A garbled or
-non-menu transcript yields an empty list, which leaves the validator permissive
-(never a false reject)."""
+The extractor biases toward capture: if the transcript contains any
+press/dial/select-style cue, every single key in it is captured (count-phrase
+digits like '9 digit' excluded). A cue-less or non-menu transcript yields an
+empty list, leaving the validator permissive. Over-capture is the safe failure
+direction; under-capture would false-reject a real option."""
 
 from __future__ import annotations
 
@@ -46,6 +47,15 @@ from agent.tools import parse_menu_options
         # --- count-phrase exclusion (digit is a length, not an option) --------
         ("Please enter your 9 digit member ID.", []),
         ("Enter your 10 digit phone number.", []),
+        # exclusion fires per-key: a real option survives alongside an excluded
+        # count-digit (isolates the count-noun branch from the cue branch)
+        ("Press 1 for billing, or enter your 9 digit ID.", ["1"]),
+        # 'number'/'numbers' are count nouns too, not just 'digit'
+        ("Press 1 for sales, or press 2 numbers for the directory.", ["1"]),
+        ("Press 3 numbers to confirm.", []),
+        # STT fusion ('press2' as one token) → no cue detected → []. Pins the
+        # accepted-loss tradeoff documented in the tools.py module comment.
+        ("Press2 for billing.", []),
         # --- de-duplication, order preserved ----------------------------------
         ("Press 1 for sales. Press 1 again to confirm. Press 2 to cancel.", ["1", "2"]),
         # --- NON-menu input → empty (validator stays permissive) --------------
