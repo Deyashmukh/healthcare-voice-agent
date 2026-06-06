@@ -44,3 +44,7 @@ benefits.jsonl
 
 # Eval run artifacts (per-run JSON). The committed trend is eval_history.jsonl.
 eval_results/
+
+# Eval trend file appended by `make evals`. Whether to commit a trend is an
+# M-eval/G (CI) decision; for now it's local-run scratch like eval_results/.
+eval_history.jsonl
