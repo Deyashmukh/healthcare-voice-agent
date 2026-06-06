@@ -35,6 +35,10 @@ async def run_eval[CaseT: EvalCase](
     if max_cases is not None and len(cases) > max_cases:
         log.warning("eval_corpus_truncated", layer=layer, total=len(cases), kept=max_cases)
         selected = cases[:max_cases]
+    if not selected:
+        # An empty run reports pass_rate=0.0, which reads like a catastrophic
+        # regression rather than "nothing ran" — say so loudly.
+        log.warning("eval_corpus_empty", layer=layer)
 
     retry_budget = total_retry_budget
     results: list[CaseResult] = []
@@ -56,10 +60,17 @@ async def run_eval[CaseT: EvalCase](
                     continue
                 break
         if result is None:
+            # Terminal ERROR (retries exhausted, or per_case_retries=0). Log it
+            # loudly — a model/provider failure that exists only as a number in
+            # the aggregate report is the silent failure we're guarding against.
+            # Prefix the exception type so a real bug (AttributeError) is visibly
+            # distinct from a provider blip (ConnectionError) in the report.
+            error_text = f"{type(last_error).__name__}: {last_error}"
+            log.warning("eval_case_error", layer=layer, case_id=case_id, error=error_text)
             result = CaseResult(
                 case_id=case_id,
                 outcome=EvalOutcome.ERROR,
-                error=str(last_error),
+                error=error_text,
             )
         results.append(result)
 

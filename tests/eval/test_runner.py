@@ -36,9 +36,16 @@ async def test_run_eval_retries_then_errors_on_persistent_raise() -> None:
         calls.append(case.id)
         raise RuntimeError("api down")
 
-    report = await run_eval([_case("a")], scorer, layer="ivr", per_case_retries=1)
+    with structlog.testing.capture_logs() as captured:
+        report = await run_eval([_case("a")], scorer, layer="ivr", per_case_retries=1)
     assert report.errored == 1
-    assert report.results[0].error is not None
+    # Terminal ERROR is logged loudly with the exception type prefixed, not just
+    # buried as an aggregate count.
+    err_events = [e for e in captured if e.get("event") == "eval_case_error"]
+    assert len(err_events) == 1
+    error = report.results[0].error
+    assert error is not None
+    assert "RuntimeError" in error
     assert len(calls) == 2  # initial attempt + 1 retry
 
 

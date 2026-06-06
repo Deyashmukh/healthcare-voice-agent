@@ -12,7 +12,7 @@ from collections import Counter
 from enum import StrEnum
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent.schemas import Benefits, ToolName, Turn
 
@@ -39,6 +39,11 @@ class EvalCase(BaseModel):
     Bounding the loader/runner typevars to this (not bare `BaseModel`) makes
     `case.id` a typed attribute, so a future case model that forgets `id` is a
     type error rather than a silent `"<unknown>"` at runtime."""
+
+    # Reject unknown fields so a misspelled or stale corpus key ('expcted_args',
+    # a field renamed in a refactor) fails loudly at load time as a CorpusError,
+    # instead of being silently dropped and scoring the case against defaults.
+    model_config = ConfigDict(extra="forbid")
 
     id: str
 

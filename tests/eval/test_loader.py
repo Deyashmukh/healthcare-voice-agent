@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -52,3 +53,15 @@ def test_load_cases_raises_with_line_number_on_schema_mismatch(tmp_path: Path) -
 def test_load_cases_missing_file_raises_corpus_error(tmp_path: Path) -> None:
     with pytest.raises(CorpusError):
         load_cases(tmp_path / "nope.jsonl", IVREvalCase)
+
+
+def test_load_cases_rejects_unknown_field(tmp_path: Path) -> None:
+    """A misspelled / stale corpus key must fail loudly (extra='forbid'), not be
+    silently dropped and scored against defaults."""
+    valid = IVREvalCase(id="c1", payer="p", history=[], expected_tool="wait", rationale="r")
+    bad = valid.model_dump()
+    bad["expcted_args"] = {"digits": "2"}  # typo of expected_args
+    path = _write(tmp_path / "corpus.jsonl", [json.dumps(bad)])
+    with pytest.raises(CorpusError) as exc:
+        load_cases(path, IVREvalCase)
+    assert "line 1" in str(exc.value)
