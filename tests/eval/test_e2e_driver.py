@@ -5,8 +5,11 @@ Uses fake LLM clients producing scripted tool calls / rep outputs — zero netwo
 
 from __future__ import annotations
 
+import pytest
+
 from agent.call_session import CallSessionRunner
 from agent.eval._types import EvalOutcome, FailureMode
+from agent.eval.e2e_trajectory import _driver
 from agent.eval.e2e_trajectory._driver import RecordingActuator, run_scenario, score_scenario
 from agent.eval.e2e_trajectory._scripted_payer import Scenario
 from agent.schemas import (
@@ -38,6 +41,23 @@ def _runner(
         tools=[],
         actuator=actuator,
     )
+
+
+async def test_wait_for_turn_gives_up_cleanly_when_no_advance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Poll-cap exhaustion: if a turn never advances, the driver gives up cleanly
+    # (returns session.done == False) instead of hanging forever. Shrink the cap
+    # so the test is fast.
+    monkeypatch.setattr(_driver, "_POLL_ITERATIONS", 2)
+    runner = _runner(
+        FakeIVRLLMClient(responses=[]), FakeAnthropicRepClient(responses=[]), RecordingActuator()
+    )
+    # Runner not started → turn_count stays 0 and the call is never done.
+    ended = await _driver._wait_for_turn(  # pyright: ignore[reportPrivateUsage]
+        runner, runner.session.turn_count
+    )
+    assert ended is False
 
 
 async def test_happy_path_reaches_rep_complete() -> None:

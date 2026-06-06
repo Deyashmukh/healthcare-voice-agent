@@ -13,13 +13,14 @@ import asyncio
 
 from agent.actuator import Actuator
 from agent.call_session import CallSessionRunner
+from agent.eval.e2e_trajectory._driver import RecordingActuator
 from agent.llm_client import AnthropicRepClient, GroqToolCallingClient
 from agent.main import (
     _default_patient,  # pyright: ignore[reportPrivateUsage]
     _ivr_system_prompt,  # pyright: ignore[reportPrivateUsage]
     _rep_system_prompt,  # pyright: ignore[reportPrivateUsage]
 )
-from agent.schemas import CallSession, SideEffectIntent
+from agent.schemas import CallSession
 from agent.tools import dispatch, groq_tool_schemas
 
 _SCRIPT = [
@@ -33,17 +34,9 @@ _SCRIPT = [
 ]
 
 
-class _RecordingActuator:  # satisfies Actuator
-    def __init__(self) -> None:
-        self.intents: list[SideEffectIntent] = []
-
-    async def execute(self, intent: SideEffectIntent) -> None:
-        self.intents.append(intent)
-
-
 async def main() -> None:
     session = CallSession(call_sid="E2E-spike", patient=_default_patient())
-    actuator: Actuator = _RecordingActuator()
+    actuator: Actuator = RecordingActuator()
     runner = CallSessionRunner(
         session=session,
         ivr_llm=GroqToolCallingClient(),
