@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
-from agent.eval._types import EvalOutcome, FailureMode, IVREvalCase
-from agent.eval.ivr_tool_choice._score import score_ivr
+import pytest
+
+from agent.eval._runner import run_eval
+from agent.eval._types import CaseResult, EvalOutcome, FailureMode, IVREvalCase
+from agent.eval.ivr_tool_choice._score import NoToolCallError, score_ivr
 from agent.schemas import IVRTurnResponse, ToolCall, Turn
 
 
@@ -34,11 +37,29 @@ def test_wrong_tool() -> None:
     assert result.failure_mode is FailureMode.WRONG_TOOL
 
 
-def test_no_tool_call_is_wrong_tool() -> None:
-    result = score_ivr(_case(), IVRTurnResponse(tool_calls=[]))
-    assert result.outcome is EvalOutcome.FAIL
-    assert result.failure_mode is FailureMode.WRONG_TOOL
-    assert "no tool call" in result.detail
+def test_no_tool_call_raises_not_fails() -> None:
+    # Under tool_choice=required, an empty response is a transient provider glitch,
+    # not a tool choice — it raises so the runner retries / records ERROR rather
+    # than a false WRONG_TOOL FAIL.
+    with pytest.raises(NoToolCallError):
+        score_ivr(_case(), IVRTurnResponse(tool_calls=[]))
+
+
+async def test_no_tool_call_becomes_retried_error_in_runner() -> None:
+    # End-to-end through the runner: a persistently-empty response is retried
+    # then recorded as ERROR (excluded from the wrong_tool FAIL count), with the
+    # transient-glitch detail preserved.
+    calls: list[str] = []
+
+    async def scorer(case: IVREvalCase) -> CaseResult:
+        calls.append(case.id)
+        return score_ivr(case, IVRTurnResponse(tool_calls=[]))
+
+    report = await run_eval([_case()], scorer, layer="ivr", per_case_retries=1)
+    assert report.errored == 1
+    assert report.failed == 0  # NOT a wrong_tool FAIL
+    assert len(calls) == 2  # initial + 1 retry (transient blips get a second shot)
+    assert "no tool call" in (report.results[0].error or "")
 
 
 def test_bad_arg_when_digit_differs() -> None:
