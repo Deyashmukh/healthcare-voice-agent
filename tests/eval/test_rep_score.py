@@ -52,6 +52,15 @@ def test_bad_arg_value() -> None:
     assert result.failure_mode is FailureMode.BAD_ARG
 
 
+def test_both_missing_and_extra_labels_missed_extraction() -> None:
+    # Expected one field, got a totally different one (missing AND extra). The
+    # scorer checks `missing` first; MISSED_EXTRACTION (failed to capture the
+    # expected field) is the load-bearing label, and `detail` carries both dicts.
+    case = _case(Benefits(copay=40.0))
+    result = score_rep(case, _out("Got it.", Benefits(deductible_remaining=300.0)))
+    assert result.failure_mode is FailureMode.MISSED_EXTRACTION
+
+
 def test_premature_complete() -> None:
     case = _case(Benefits(copay=40.0), phase="extracting")
     result = score_rep(case, _out("All set, bye.", Benefits(copay=40.0), phase="complete"))

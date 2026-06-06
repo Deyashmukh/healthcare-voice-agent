@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from agent.eval._report import render_table, write_report
@@ -19,14 +20,23 @@ from agent.eval.rep_extraction import eval as rep_eval
 _RESULTS_DIR = Path("eval_results")
 _HISTORY_PATH = Path("eval_history.jsonl")
 
+_LAYERS: dict[str, Callable[[], Awaitable[ScoreReport]]] = {
+    "ivr": ivr_eval.run,
+    "rep": rep_eval.run,
+}
 
-async def _run_selected(layers: list[str]) -> list[ScoreReport]:
-    reports: list[ScoreReport] = []
-    if "ivr" in layers:
-        reports.append(await ivr_eval.run())
-    if "rep" in layers:
-        reports.append(await rep_eval.run())
-    return reports
+
+async def _run_and_report(layers: list[str], timestamp: str) -> None:
+    # Write each layer's report the moment its run completes, so a later layer
+    # failing (e.g. a corpus or config error) can't discard an earlier layer's
+    # already-computed results — and its already-spent API calls.
+    for name in layers:
+        report = await _LAYERS[name]()
+        print(render_table(report))
+        out = write_report(
+            report, results_dir=_RESULTS_DIR, history_path=_HISTORY_PATH, timestamp=timestamp
+        )
+        print(f"  wrote {out}")
 
 
 def main() -> None:
@@ -35,14 +45,8 @@ def main() -> None:
     args = parser.parse_args()
     layers = ["ivr", "rep"] if args.layer == "all" else [args.layer]
 
-    reports = asyncio.run(_run_selected(layers))
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    for report in reports:
-        print(render_table(report))
-        out = write_report(
-            report, results_dir=_RESULTS_DIR, history_path=_HISTORY_PATH, timestamp=timestamp
-        )
-        print(f"  wrote {out}")
+    asyncio.run(_run_and_report(layers, timestamp))
 
 
 if __name__ == "__main__":

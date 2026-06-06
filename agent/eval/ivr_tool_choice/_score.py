@@ -6,6 +6,13 @@ args. No network — the live call lives in eval.py. Tool name is exact-matched;
 only the args listed in `expected_args` are checked (freeform args like
 `speak.text` are intentionally not asserted here).
 
+Arg values are compared as strings. `ToolCall.args` is the raw `json.loads` of
+the model's output (no per-key Pydantic coercion), so a digit may come back as a
+JSON number (`2`) or string (`"2"`); a string compare keeps that provider quirk
+from mislabeling a correct press as `BAD_ARG` — which would silently understate
+accuracy in the instrument itself. The deterministic args we assert (digits,
+purpose, reason) are all cleanly stringifiable.
+
 Caveat: a missing tool call is scored FAIL/WRONG_TOOL. `GroqToolCallingClient`
 swallows transient API errors into an empty `IVRTurnResponse`, so a provider blip
 also surfaces here as "no tool call" rather than as a runner ERROR. This is a
@@ -42,7 +49,7 @@ def score_ivr(case: IVREvalCase, response: IVRTurnResponse) -> CaseResult:
     mismatched = {
         key: {"expected": value, "actual": call.args.get(key)}
         for key, value in case.expected_args.items()
-        if call.args.get(key) != value
+        if str(call.args.get(key)) != str(value)
     }
     if mismatched:
         return CaseResult(

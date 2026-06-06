@@ -47,6 +47,13 @@ def test_bad_arg_when_digit_differs() -> None:
     assert result.failure_mode is FailureMode.BAD_ARG
 
 
+def test_json_number_digit_is_not_a_false_bad_arg() -> None:
+    # Groq may emit the digit as a JSON number (2) rather than a string ("2").
+    # The scorer compares as strings so a correct press isn't mislabeled BAD_ARG.
+    result = score_ivr(_case(args={"digits": "2"}), _resp("send_dtmf", {"digits": 2}))
+    assert result.outcome is EvalOutcome.PASS
+
+
 def test_only_expected_args_are_checked() -> None:
     # expected_args lists only `digits`; the model's extra `purpose` is ignored.
     result = score_ivr(
