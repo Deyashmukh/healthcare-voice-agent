@@ -71,6 +71,7 @@ omit = [
     # is NOT omitted and is covered by tests/eval/.
     "agent/eval/_spike.py",
     "agent/eval/*/eval.py",
+    "agent/eval/cli.py",
 ]
 
 [tool.coverage.report]
