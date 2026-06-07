@@ -5,6 +5,9 @@ scenario. Not a pytest test; run via `make evals`. Coverage-omitted.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from agent.actuator import Actuator
 from agent.call_session import CallSessionRunner
 from agent.eval._runner import run_eval
@@ -24,6 +27,13 @@ LAYER = "e2e_trajectory"
 
 
 async def run() -> ScoreReport:
+    # Each scenario runs a full CallSession, which writes a benefits-JSONL
+    # deliverable on completion. Redirect it to the gitignored eval_results/
+    # dir so eval runs don't pollute the real `benefits.jsonl` with synthetic
+    # records. The eval scores in-memory `session.benefits`, not this file.
+    Path("eval_results").mkdir(exist_ok=True)
+    os.environ["BENEFITS_LOG_PATH"] = "eval_results/e2e_benefits.jsonl"
+
     patient = _default_patient()
     tools = groq_tool_schemas()
     ivr_system = _ivr_system_prompt(patient)
