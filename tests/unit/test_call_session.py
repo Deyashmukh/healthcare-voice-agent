@@ -349,6 +349,38 @@ async def test_unexpected_record_error_is_caught_and_consumer_stays_alive(
     assert runner.session.completion_reason == "benefits_extracted"
 
 
+async def test_completion_cancel_does_not_false_alarm_lost_deliverable(
+    make_session: MakeSession, monkeypatch: pytest.MonkeyPatch
+):
+    """A cancel landing at the benefits-write `await` must NOT log
+    `call_session_completed_without_deliverable` — `to_thread` dispatched the
+    worker before the cancel could land, so the write completes and the
+    deliverable is on disk. Only an honest `benefits_record_written_despite_cancel`
+    info event fires. (Regression: the E2E eval's stop() races a clean
+    rep_complete and used to cry wolf about a deliverable that was written.)"""
+    from agent import call_session
+
+    real_append = call_session._append_benefits_record  # pyright: ignore[reportPrivateUsage]
+
+    async def _write_then_cancel(session: CallSession) -> NoReturn:
+        # Reality on the cancel path: the worker wrote the row, then the awaiter
+        # was cancelled at the to_thread await.
+        await real_append(session)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(call_session, "_append_benefits_record", _write_then_cancel)
+    runner, _ivr, _rep = _build_runner(make_session(), actuator=FakeActuator())
+    runner.session.completion_reason = "rep_complete"
+    with structlog.testing.capture_logs() as captured, pytest.raises(asyncio.CancelledError):
+        await runner._record_completion_if_needed()  # pyright: ignore[reportPrivateUsage]
+
+    log_path = Path(os.environ["BENEFITS_LOG_PATH"])
+    assert log_path.exists(), "the to_thread worker should have written the deliverable"
+    events = [e.get("event") for e in captured]
+    assert "call_session_completed_without_deliverable" not in events
+    assert "benefits_record_written_despite_cancel" in events
+
+
 async def test_ivr_turn_dispatches_send_dtmf_intent(make_session: MakeSession):
     """Turn 1 sends DTMF, turn 2 completes the call. Use a FakeActuator so
     we can assert on the intents directly."""

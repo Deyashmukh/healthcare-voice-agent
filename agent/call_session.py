@@ -377,13 +377,14 @@ class CallSessionRunner:
         in-turn completions, `stop()` for terminal-outside-a-turn cases —
         share the `_benefits_recorded` flag so exactly one line per call.
 
-        Load-bearing fact: `asyncio.to_thread` workers don't see
-        `CancelledError`, so once `_append_benefits_record` has dispatched
-        the worker the file write completes regardless of cancellation in
-        the awaiter. Flag flips in `finally` so the at-most-once invariant
-        holds in every cancel scenario except the narrow window where
-        cancel lands BEFORE the worker is dispatched (during the
-        `json.dumps` prelude) — record lost, never double-write.
+        Load-bearing fact: `asyncio.to_thread` dispatches its worker
+        SYNCHRONOUSLY (`run_in_executor` submits the callable before the
+        first `await`), and a cancellation can only be delivered at that
+        `await` — i.e. AFTER the worker is already running. Workers don't
+        see `CancelledError`, so on the cancel path the file write always
+        completes: the deliverable is durably on disk. The cancel branch
+        therefore logs that the write completed despite cancellation, NOT
+        a lost-deliverable error. Flag flips in `finally` for at-most-once.
 
         `except Exception` keeps the consumer alive when an unexpected
         error type slips past `_append_benefits_record`'s narrow catches
@@ -409,20 +410,16 @@ class CallSessionRunner:
         try:
             await _append_benefits_record(self.session)
         except asyncio.CancelledError:
-            # Without this log, an investigator sees `call_session_complete`
-            # immediately above and no JSONL line, with no signal
-            # distinguishing "we tried but were cancelled" from "the writer
-            # crashed silently."
-            log.warning(
-                "benefits_record_skipped_due_to_cancel",
+            # The surrounding turn was cancelled at the write `await`, but the
+            # to_thread worker was already dispatched and completes the write
+            # regardless (see the load-bearing fact above) — the deliverable IS
+            # on disk. Record that honestly; do NOT false-alarm
+            # `completed_without_deliverable`, which would cry wolf on every
+            # fast call-end (e.g. stop() racing a clean rep_complete).
+            log.info(
+                "benefits_record_written_despite_cancel",
                 call_sid=self.session.call_sid,
                 reason=self.session.completion_reason,
-            )
-            log.error(
-                "call_session_completed_without_deliverable",
-                call_sid=self.session.call_sid,
-                reason=self.session.completion_reason,
-                cause="cancelled",
             )
             raise
         except Exception as exc:
