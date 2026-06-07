@@ -14,6 +14,7 @@ from pathlib import Path
 
 from agent.eval._report import render_table, write_report
 from agent.eval._types import ScoreReport
+from agent.eval.e2e_trajectory import eval as e2e_eval
 from agent.eval.ivr_tool_choice import eval as ivr_eval
 from agent.eval.rep_extraction import eval as rep_eval
 
@@ -23,6 +24,7 @@ _HISTORY_PATH = Path("eval_history.jsonl")
 _LAYERS: dict[str, Callable[[], Awaitable[ScoreReport]]] = {
     "ivr": ivr_eval.run,
     "rep": rep_eval.run,
+    "e2e": e2e_eval.run,
 }
 
 
@@ -41,9 +43,9 @@ async def _run_and_report(layers: list[str], timestamp: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run component evals.")
-    parser.add_argument("layer", nargs="?", default="all", choices=["ivr", "rep", "all"])
+    parser.add_argument("layer", nargs="?", default="all", choices=["ivr", "rep", "e2e", "all"])
     args = parser.parse_args()
-    layers = ["ivr", "rep"] if args.layer == "all" else [args.layer]
+    layers = ["ivr", "rep", "e2e"] if args.layer == "all" else [args.layer]
 
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     asyncio.run(_run_and_report(layers, timestamp))

@@ -1,0 +1,34 @@
+name: nightly-evals
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # 08:00 UTC nightly
+  workflow_dispatch: {}    # manual trigger from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # ~14-20 sequential live round-trips; headroom for slow-provider nights
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: Run component + E2E evals
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run python -m agent.eval.cli all
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            eval_results/
+            eval_history.jsonl
+          if-no-files-found: ignore

@@ -69,7 +69,7 @@ omit = [
     # Live-LLM eval entrypoints: run via `make eval-spike` / `make evals`,
     # not pytest. The hermetic harness (agent/eval/_types|_loader|_runner|_report)
     # is NOT omitted and is covered by tests/eval/.
-    "agent/eval/_spike.py",
+    "agent/eval/**/_spike.py",
     "agent/eval/*/eval.py",
     "agent/eval/cli.py",
 ]
