@@ -26,33 +26,42 @@
 # pyright: strict
 """Shared configuration constants.
 
-`DEEPGRAM_MODEL` exists so production (`main.py`) and the eval audio toolkit
-(`agent/eval/audio/transcribe.py`) transcribe with the SAME model and cannot
-drift apart silently. Production previously used pipecat's implicit default
-("nova-3-general"); this pins the same value explicitly.
+These exist so production (`main.py`) and the eval audio toolkit transcribe
+and synthesize with the SAME settings and cannot drift apart silently.
+Production previously used pipecat's implicit Deepgram default
+("nova-3-general") and an inline voice-id literal; this pins both explicitly.
 """
 
 from __future__ import annotations
 
 DEEPGRAM_MODEL = "nova-3-general"
+ELEVENLABS_DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"
 ```
 
-- [ ] **Step 2: Verify pipecat's default model and live-options merge behavior**
+Also update `agent/main.py:248` to consume the voice constant (same drift class as the Deepgram model):
 
-Read `.venv/lib/python3.12/site-packages/pipecat/services/deepgram/stt.py` (the installed source). Confirm: (a) the default `LiveOptions` model is `nova-3-general` — if it differs, change `agent/config.py` to match the actual default, since the constant must describe production, not assume it; (b) whether a user-supplied `live_options` is merged over the defaults or replaces them. If merged, Step 3 passes a minimal `LiveOptions(model=DEEPGRAM_MODEL)`. If it REPLACES the defaults, Step 3 must instead copy the full default `LiveOptions` construction from the installed source and override only `model`.
+```python
+voice_id=os.environ.get("ELEVENLABS_VOICE_ID", ELEVENLABS_DEFAULT_VOICE_ID),
+```
+
+with `ELEVENLABS_DEFAULT_VOICE_ID` added to the `agent.config` import.
+
+- [ ] **Step 2: Sanity-check the canonical settings API in the installed pipecat**
+
+Verified at plan time against the installed source (`.venv/.../pipecat/services/deepgram/stt.py`, pipecat 1.0.0 + deepgram-sdk 6.1.1): the default model is hardcoded `"nova-3-general"`; user-supplied settings MERGE over defaults (only given fields applied); `LiveOptions` was REMOVED from deepgram-sdk v6 (`from deepgram import LiveOptions` is an ImportError) and pipecat's compat shim of it is deprecated. The canonical API is `settings=DeepgramSTTService.Settings(...)`. This step is a quick re-check that the installed source still matches that description (versions are pinned, so it will).
 
 - [ ] **Step 3: Wire main.py to the constant**
 
-In `agent/main.py`, add imports `from deepgram import LiveOptions` and `from agent.config import DEEPGRAM_MODEL`, and change line 243:
+In `agent/main.py`, add the import `from agent.config import DEEPGRAM_MODEL` and change line 243:
 
 ```python
 stt = DeepgramSTTService(
     api_key=os.environ["DEEPGRAM_API_KEY"],
-    live_options=LiveOptions(model=DEEPGRAM_MODEL),
+    settings=DeepgramSTTService.Settings(model=DEEPGRAM_MODEL),
 )
 ```
 
-(adjusted per Step 2's merge finding).
+Do NOT use `live_options=` (deprecated compat shim, warns at every init) or `from deepgram import LiveOptions` (removed in SDK v6, ImportError).
 
 - [ ] **Step 4: Lint + typecheck**
 
@@ -585,12 +594,12 @@ import os
 
 from elevenlabs.client import ElevenLabs
 
-_DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # matches agent/main.py default
+from agent.config import ELEVENLABS_DEFAULT_VOICE_ID
 
 
 def synthesize(text: str) -> bytes:
     client = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
-    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", _DEFAULT_VOICE_ID)
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", ELEVENLABS_DEFAULT_VOICE_ID)
     chunks = client.text_to_speech.convert(
         voice_id=voice_id,
         text=text,
@@ -775,12 +784,14 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="overwrite existing staging output")
     args = parser.parse_args()
 
-    all_wers: list[float] = []
     print("=== ivr_tool_choice ===")
-    all_wers += _harvest_corpus(IVR_CORPUS, IVREvalCase, force=bool(args.force))
+    ivr_wers = _harvest_corpus(IVR_CORPUS, IVREvalCase, force=bool(args.force))
+    print(f"  ivr median WER={statistics.median(ivr_wers):.1%}")
     print("=== rep_extraction ===")
-    all_wers += _harvest_corpus(REP_CORPUS, RepEvalCase, force=bool(args.force))
+    rep_wers = _harvest_corpus(REP_CORPUS, RepEvalCase, force=bool(args.force))
+    print(f"  rep median WER={statistics.median(rep_wers):.1%}")
 
+    all_wers = ivr_wers + rep_wers
     median = statistics.median(all_wers)
     print(f"\noverall: {len(all_wers)} turns, median WER={median:.1%}")
     if median < WER_TRIGGER:
@@ -797,7 +808,7 @@ if __name__ == "__main__":
     main()
 ```
 
-Note `exclude_none=True` in the dump: keeps `source_id: null` and unset `Benefits` fields out of the JSONL, matching the existing corpora's compact style. Check that the loader round-trips one staged line (it will — all dropped fields have defaults). Note for the spec-reviewer: `EvalCase` (Task 4) means `load_cases` here rejects an UNAUDITED *staging* file too — which is why harvest reads the CLEAN corpus and only ever WRITES the staging file; nothing loads staging through `load_cases`.
+Note `exclude_none=True` in the dump: keeps `source_id: null` and unset `Benefits` fields out of the JSONL, matching the existing corpora's compact style. To sanity-check round-tripping, validate a staged line directly with `IVREvalCase.model_validate_json(line)` — do NOT use `load_cases` on the staging file, which raises `CorpusError` on the `UNAUDITED:` prefix *by design* (that's the enforcement working). Harvest reads the CLEAN corpus and only ever WRITES the staging file; nothing loads staging through `load_cases`.
 
 - [ ] **Step 2: Lint + typecheck**
 
@@ -940,13 +951,13 @@ _LAYERS: dict[str, Callable[[], Awaitable[ScoreReport]]] = {
         "layer",
         nargs="?",
         default="all",
-        choices=["ivr", "rep", "e2e", "ivr-noisy", "rep-noisy", "all"],
+        choices=[*_LAYERS, "all"],
     )
     args = parser.parse_args()
     layers = list(_LAYERS) if args.layer == "all" else [args.layer]
 ```
 
-(`list(_LAYERS)` replaces the hand-maintained `["ivr", "rep", "e2e"]` so `all` can never silently miss a registered layer again.)
+(Both the `choices` list and the `all` expansion now derive from `_LAYERS`, so a future layer can't be registered in one place and silently missing from the other.)
 
 - [ ] **Step 4: Lint, typecheck, suite**
 
@@ -991,13 +1002,29 @@ git commit -m "docs: pause RLVR track behind the M-voice/A noisy-eval gate"
 
 ---
 
-### Task 11: LIVE — K=3 measurement + gate input
+### Task 11: simplify + code review (BEFORE the live measurement)
 
-Controller-run, with the user. ~12 cases × 4 layers × 3 runs ≈ 144 LLM calls (Groq + Anthropic; same per-run cost as three `make evals`).
+Per CLAUDE.md rule 3 and the standing post-milestone chain: simplify and review run against the finished code BEFORE the evidence-gathering runs, so the measurement is taken on the reviewed code, not on code that changes afterward.
+
+- [ ] Run the `superpowers:simplify` skill over the branch diff (`git diff main...HEAD`); fix findings.
+- [ ] Dispatch the `pr-review-toolkit:code-reviewer` agent over the same diff; fix real findings, surface any correctness bugs to the user before fixing.
+- [ ] Re-run the gauntlet: `uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q` — all clean.
+- [ ] Commit fixes (if any) as their own commit:
+
+```bash
+git add -A
+git commit -m "refactor: simplify + code-review fixes for M-voice/A"
+```
+
+---
+
+### Task 12: LIVE — K=3 measurement + gate input
+
+Controller-run, with the user. 6 cases × 4 layers × 3 runs = **72 LLM calls** (Groq + Anthropic; same per-run cost as three `make evals`).
 
 - [ ] **Step 1: Three runs of each surface**
 
-Run, three times each (sequentially; each appends to `eval_history.jsonl`):
+Run, three times each (sequentially; each appends to the local `eval_history.jsonl` trend file):
 
 ```bash
 uv run python -m agent.eval.cli ivr
@@ -1006,34 +1033,37 @@ uv run python -m agent.eval.cli ivr-noisy
 uv run python -m agent.eval.cli rep-noisy
 ```
 
-If any run reports `error > 0`: re-run that surface until a run completes with zero ERRORs (the gate's denominator excludes ERRORs by re-running, per the spec). Keep all completed-clean runs; discard errored runs from the gate arithmetic (they stay in eval_history.jsonl, which is fine — it's a trend log, not the gate input).
+If any run reports `error > 0`: re-run that *surface* until a run completes with zero ERRORs, and use only zero-ERROR runs in the gate arithmetic. (Deliberate simplification of the spec's "ERRORs re-run to resolution": whole-surface re-runs instead of per-case re-runs — 6-case surfaces make the wasted cost trivial and the arithmetic clean.)
 
-- [ ] **Step 2: Compute the gate metric**
+- [ ] **Step 2: Compute the gate metric — on PAIRED cases only**
 
-From the three clean runs per surface: mean failed-case count, pooled across ivr+rep (clean) and ivr-noisy+rep-noisy (noisy). The gate metric is `mean_noisy_failures - mean_clean_failures`. Bands (pre-committed in the spec): ≤ 1 → RLVR archived; ≥ 3 → RLVR re-scoped around noise robustness; exactly 2 → user judgment call. Tabulate per-run pass rates and the delta; this table goes in the PR body verbatim.
+If the audit (Task 8) dropped any noisy case, the surfaces are no longer the same size, and naive whole-surface deltas are biased toward archiving RLVR (a dropped hard case can't fail). The pairing rule, pre-committed here: **clean failures count only for cases whose `-noisy` counterpart survived the audit** (the `source_id` linkage gives the pairing). Gate metric = `mean_noisy_failures - mean_paired_clean_failures` over the three zero-ERROR runs per side, pooled across ivr+rep. Bands (pre-committed in the spec): ≤ 1 → RLVR archived; ≥ 3 → RLVR re-scoped around noise robustness; exactly 2 → user judgment call. Tabulate per-run pass rates, the paired-case count, dropped-case count, and the delta; this table goes in the PR body verbatim.
 
 - [ ] **Step 3: PAUSE — present the measurement and the band to the user**
 
-The gate decision is the user's. Record the decision (and reasoning if band 2) by updating the RLVR spec's Status header accordingly in a follow-up commit (`ARCHIVED — gate decided YYYY-MM-DD: <numbers>` or `RE-SCOPED — ...`).
+The gate decision is the user's. Record the decision (and reasoning if band 2) by updating the RLVR spec's Status header accordingly (`ARCHIVED — gate decided YYYY-MM-DD: <numbers>` or `RE-SCOPED — ...`).
 
 - [ ] **Step 4: Commit the evidence**
 
+`eval_history.jsonl` is gitignored (an M-eval/G decision this plan does not overturn), so the evidence lives in the RLVR spec header and the PR body, NOT in a committed history file:
+
 ```bash
-git add eval_history.jsonl docs/superpowers/specs/2026-06-07-rlvr-phone-agent-design.md
-git commit -m "eval: K=3 clean-vs-noisy measurement + RLVR gate decision"
+git add docs/superpowers/specs/2026-06-07-rlvr-phone-agent-design.md
+git commit -m "eval: record K=3 clean-vs-noisy measurement + RLVR gate decision"
 ```
 
 ---
 
-### Task 12: finish the branch
+### Task 13: finish the branch
 
-- [ ] Run the full verification gauntlet: `uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q` — all clean, coverage ≥ 90%.
-- [ ] Use `superpowers:finishing-a-development-branch`: PR from `m-voice-a-noisy-corpus` with the measurement table, audit notes (kept/relabeled/dropped counts), and WER verdict in the body; merge after self-review (`/pr-review-toolkit:review-pr <N>`).
+- [ ] Run the full verification gauntlet one last time: `uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q` — all clean, coverage ≥ 90%.
+- [ ] Use `superpowers:finishing-a-development-branch`: PR from `m-voice-a-noisy-corpus` with the measurement table, audit notes (kept/relabeled/dropped counts), and WER verdict in the body; after opening, self-review with `/pr-review-toolkit:review-pr <N>`, then merge.
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage:** toolkit (T2/3/5/6), DEEPGRAM_MODEL (T1), harvest+staging+UNAUDITED+WAVs+WER trigger (T7/8), source_id (T4), CLI layers incl. choices-list pitfall (T9), RLVR demotion (T10), audit (T8), K=3 measurement + gate (T11). Spec's `synthesize`-returns-PCM contract kept; resampler dropped with rationale (header note).
-- **Sequencing constraint:** Task 9 cannot run its layers before Task 8 produces `cases_noisy.jsonl`, but its code changes are independent — only `all` would fail at runtime on the missing file, and nothing in CI invokes the live CLI. Safe to build T9 before T8's live run if parallelizing; T11 needs both.
+- **Spec coverage:** toolkit (T2/3/5/6), DEEPGRAM_MODEL + voice-id constants (T1), harvest+staging+UNAUDITED+WAVs+WER trigger (T7/8), source_id (T4), CLI layers incl. choices-list pitfall (T9), RLVR demotion (T10), simplify+review (T11), audit (T8), K=3 measurement + paired-case gate (T12). Spec's `synthesize`-returns-PCM contract kept; resampler dropped with rationale (header note).
+- **Sequencing constraint:** Task 9 cannot run its layers before Task 8 produces `cases_noisy.jsonl`, but its code changes are independent — only `all` would fail at runtime on the missing file, and nothing in CI invokes the live CLI. Safe to build T9 before T8's live run if parallelizing; T12 needs both.
 - **Type consistency check:** `make_noisy_case` constrained-TypeVar matches its T5 tests; `run(*, corpus, layer)` kwargs match T9's CLI lambdas; `NOISY_CORPUS` names match between `_score.py` and `cli.py` imports; `wer`/`normalize_words` names consistent across T3/T7.
+- **Senior review (2026-06-12, APPROVE-WITH-FIXES) applied:** deepgram-sdk v6 removed `LiveOptions` → `settings=DeepgramSTTService.Settings(...)`; `eval_history.jsonl` is gitignored → evidence in PR body + spec header; paired-case gate rule for audit-dropped cases; explicit simplify+review task; `choices=[*_LAYERS, "all"]`; voice-id hoisted to config; cost math corrected to 72 calls; per-corpus median printout. Reviewer executed (not eyeballed) the codec and WER snippets: all G.711 anchors and the round-trip bound verified exhaustively over all 65,536 int16 values.
